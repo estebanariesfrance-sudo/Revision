@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tests du module de données</title>
+  <meta name="theme-color" content="#1f4fd8">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fond: #f4f6f8;
+      --carte: #ffffff;
+      --encre: #16202e;
+      --discret: #5b6776;
+      --trait: #d8dee6;
+      --accent: #1f4fd8;
+      --ok: #17734a;
+      --ko: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fond: #0f141b;
+        --carte: #171e28;
+        --encre: #e7ecf3;
+        --discret: #9aa6b6;
+        --trait: #2a3442;
+        --accent: #7aa2ff;
+        --ok: #5fd39a;
+        --ko: #ff8a80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--fond);
+      color: var(--encre);
+      font: 1rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 44rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+    h1 { margin: 0 0 .35rem; font-size: 1.75rem; line-height: 1.2; color: var(--accent); }
+    .sous { margin: 0 0 1.25rem; color: var(--discret); }
+    code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
+    .bilan {
+      margin: 0 0 1.25rem;
+      padding: .8rem 1rem;
+      background: var(--carte);
+      border: 1px solid var(--trait);
+      border-left-width: .35rem;
+      border-radius: .5rem;
+      font-weight: 600;
+    }
+    .bilan[data-etat="ok"] { border-left-color: var(--ok); color: var(--ok); }
+    .bilan[data-etat="ko"] { border-left-color: var(--ko); color: var(--ko); }
+    .resultats { list-style: none; margin: 0 0 1.5rem; padding: 0; display: grid; gap: .5rem; }
+    .groupe { margin: 1rem 0 .1rem; font-size: 1.05rem; font-weight: 700; }
+    .test {
+      background: var(--carte);
+      border: 1px solid var(--trait);
+      border-left-width: .35rem;
+      border-radius: .5rem;
+      padding: .6rem .9rem;
+    }
+    .test[data-etat="ok"] { border-left-color: var(--ok); }
+    .test[data-etat="ko"] { border-left-color: var(--ko); }
+    .ligne { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    .nom { font-weight: 600; }
+    .etat { font-weight: 600; white-space: nowrap; }
+    .test[data-etat="ok"] .etat { color: var(--ok); }
+    .test[data-etat="ko"] .etat { color: var(--ko); }
+    .detail { margin: .3rem 0 0; color: var(--discret); font-size: .9rem; overflow-wrap: anywhere; }
+    button {
+      font: inherit;
+      font-weight: 600;
+      padding: .7rem 1.2rem;
+      border: 0;
+      border-radius: .5rem;
+      background: var(--accent);
+      color: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) { button { color: #0f141b; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tests du module de données</h1>
+    <p class="sous">Base utilisée : <code>revision-db-test</code>, séparée de la vraie base. Elle est recréée avant chaque test et supprimée à la fin.</p>
+    <p id="bilan" class="bilan" data-etat="attente" aria-live="polite">Tests en cours…</p>
+    <ol id="resultats" class="resultats"></ol>
+    <button id="relancer" type="button">Relancer les tests</button>
+  </main>
+
+  <script type="module">
+    const NOM_TEST = 'revision-db-test';
+    const liste = document.getElementById('resultats');
+    const bilan = document.getElementById('bilan');
+    document.getElementById('relancer').addEventListener('click', () => location.reload());
+
+    // ---------- Chargement du module (l'erreur s'affiche à l'écran, pas seulement en console) ----------
+    let module;
+    try {
+      module = await import('./db.js');
+    } catch (erreur) {
+      bilan.dataset.etat = 'ko';
+      bilan.textContent = 'Impossible de charger db.js : ' + (erreur && erreur.message ? erreur.message : erreur);
+      throw erreur;
+    }
+    const {
+      ErreurRevision, VERSION_SCHEMA, dateLocale,
+      choisirBase, fermerBase, supprimerBase,
+      ajouterLecon, listerLecons, obtenirLecon, modifierLecon, supprimerLecon,
+      ajouterQuestions, listerQuestions, supprimerQuestion
+    } = module;
+
+    // ---------- Petit outillage de test ----------
+    let reussis = 0;
+    let echoues = 0;
+
+    function groupe(titre) {
+      const li = document.createElement('li');
+      li.className = 'groupe';
+      li.textContent = titre;
+      liste.append(li);
+    }
+
+    function ajouterLigne(titre, ok, detail) {
+      const li = document.createElement('li');
+      li.className = 'test';
+      li.dataset.etat = ok ? 'ok' : 'ko';
+
+      const ligne = document.createElement('div');
+      ligne.className = 'ligne';
+      const nom = document.createElement('span');
+      nom.className = 'nom';
+      nom.textContent = titre;
+      const etat = document.createElement('span');
+      etat.className = 'etat';
+      etat.textContent = ok ? 'Réussi' : 'Échec';
+      ligne.append(nom, etat);
+      li.append(ligne);
+
+      if (detail) {
+        const p = document.createElement('p');
+        p.className = 'detail';
+        p.textContent = detail;
+        li.append(p);
+      }
+      liste.append(li);
+    }
+
+    // Chaque test démarre avec une base vide.
+    async function tester(titre, corps) {
+      try {
+        await supprimerBase(NOM_TEST);
+        const detail = await corps();
+        reussis += 1;
+        ajouterLigne(titre, true, typeof detail === 'string' ? detail : '');
+      } catch (erreur) {
+        echoues += 1;
+        ajouterLigne(titre, false, erreur && erreur.message ? erreur.message : String(erreur));
+      }
+    }
+
+    function vrai(condition, message) {
+      if (!condition) throw new Error(message);
+    }
+
+    function egal(reel, attendu, message) {
+      if (reel !== attendu) {
+        throw new Error(message + ' — attendu : ' + JSON.stringify(attendu) + ', obtenu : ' + JSON.stringify(reel));
+      }
+    }
+
+    function egalJson(reel, attendu, message) {
+      const a = JSON.stringify(reel);
+      const b = JSON.stringify(attendu);
+      if (a !== b) throw new Error(message + ' — attendu : ' + b + ', obtenu : ' + a);
+    }
+
+    // Vérifie qu'une promesse est refusée avec le bon code d'erreur ; renvoie le message d'erreur pour l'afficher.
+    async function rejette(promesse, code, morceau) {
+      try {
+        await promesse;
+      } catch (erreur) {
+        if (!(erreur instanceof ErreurRevision)) {
+          throw new Error('Erreur inattendue (' + (erreur && erreur.name) + ' : ' + (erreur && erreur.message) + ')');
+        }
+        if (erreur.code !== code) {
+          throw new Error('Code attendu ' + code + ', obtenu ' + erreur.code + ' (« ' + erreur.message + ' »)');
+        }
+        if (morceau && !erreur.message.includes(morceau)) {
+          throw new Error('Le message devrait contenir « ' + morceau + ' », obtenu : « ' + erreur.message + ' »');
+        }
+        return erreur.message;
+      }
+      throw new Error('La valeur aurait dû être refusée, mais elle a été acceptée.');
+    }
+
+    const attendre = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    function sans(objet, cle) {
+      const copie = { ...objet };
+      delete copie[cle];
+      return copie;
+    }
+
+    const LECON = {
+      titre: 'Les fractions',
+      matiere: 'Mathématiques',
+      importance: 2,
+      texte: 'Une fraction représente une partie d’un tout.'
+    };
+
+    const QUESTIONS = [
+      { question: 'Que représente une fraction ?', reponse: 'Une partie d’un tout.' },
+      { question: 'Comment s’appelle le nombre du bas ?', reponse: 'Le dénominateur.' },
+      { question: 'Comment s’appelle le nombre du haut ?', reponse: 'Le numérateur.' }
+    ];
+
+    // ---------- Les tests ----------
+    try {
+      await choisirBase(NOM_TEST);
+
+      groupe('Dates');
+
+      await tester('dateLocale() renvoie le jour local au format AAAA-MM-JJ', async () => {
+        const jour = dateLocale();
+        vrai(/^\d{4}-\d{2}-\d{2}$/.test(jour), 'Format inattendu : ' + jour);
+        egal(jour, new Date().toLocaleDateString('sv-SE'), 'Doit correspondre au jour local de l’appareil');
+        return 'Aujourd’hui : ' + jour;
+      });
+
+      await tester('dateLocale() ne bascule pas en UTC (juste après minuit, juste avant minuit)', async () => {
+        egal(dateLocale(new Date(2026, 0, 5, 0, 30)), '2026-01-05', 'Juste après minuit');
+        egal(dateLocale(new Date(2026, 0, 5, 23, 59)), '2026-01-05', 'Juste avant minuit');
+        egal(dateLocale(new Date(2026, 11, 31, 23, 59)), '2026-12-31', 'Dernier jour de l’année');
+        egal(dateLocale(new Date(2028, 1, 29, 12, 0)), '2028-02-29', 'Année bissextile');
+      });
+
+      await tester('dateLocale() refuse une date invalide', async () => {
+        const message = await rejette(Promise.resolve().then(() => dateLocale(new Date('pas une date'))), 'VALIDATION');
+        await rejette(Promise.resolve().then(() => dateLocale('2026-01-01')), 'VALIDATION');
+        return message;
+      });
+
+      groupe('Schéma de la base');
+
+      await tester('Le schéma version 1 contient les deux stores et leurs index', async () => {
+        await listerLecons(); // force la création de la base
+        await fermerBase();
+        const db = await new Promise((resolve, reject) => {
+          const requete = indexedDB.open(NOM_TEST);
+          requete.onsuccess = () => resolve(requete.result);
+          requete.onerror = () => reject(requete.error);
+        });
+        try {
+          egal(db.version, VERSION_SCHEMA, 'Version du schéma');
+          vrai(db.objectStoreNames.contains('lecons'), 'Store « lecons » absent');
+          vrai(db.objectStoreNames.contains('questions'), 'Store « questions » absent');
+          const transaction = db.transaction(['lecons', 'questions'], 'readonly');
+          egal(transaction.objectStore('lecons').keyPath, 'id', 'Clé du store lecons');
+          const questions = transaction.objectStore('questions');
+          egal(questions.keyPath, 'id', 'Clé du store questions');
+          vrai(questions.indexNames.contains('leconId'), 'Index « leconId » absent');
+          vrai(questions.indexNames.contains('prochaineRevision'), 'Index « prochaineRevision » absent');
+        } finally {
+          db.close();
+        }
+        return 'Version ' + VERSION_SCHEMA + ' : stores lecons et questions, index leconId et prochaineRevision.';
+      });
+
+      groupe('Leçons : ajout, lecture, modification');
+
+      await tester('Ajout d’une leçon : champs, nettoyage du titre, valeurs de départ', async () => {
+        const lecon = await ajouterLecon({ ...LECON, titre: '  Les fractions  ' });
+        vrai(typeof lecon.id === 'string' && lecon.id.length > 0, 'Identifiant absent');
+        egal(lecon.titre, 'Les fractions', 'Le titre doit être débarrassé des espaces superflus');
+        egal(lecon.matiere, LECON.matiere, 'Matière');
+        egal(lecon.importance, 2, 'Importance');
+        egal(lecon.texte, LECON.texte, 'Texte');
+        egal(lecon.synthese, null, 'La synthèse doit valoir null au départ');
+        vrai(!Number.isNaN(Date.parse(lecon.creeLe)), 'creeLe n’est pas une date valide');
+        egal(lecon.modifieLe, lecon.creeLe, 'modifieLe doit être égal à creeLe à la création');
+        return 'Identifiant généré : ' + lecon.id;
+      });
+
+      await tester('Les importances 1 et 3 (bornes) sont acceptées', async () => {
+        const basse = await ajouterLecon({ ...LECON, importance: 1 });
+        const haute = await ajouterLecon({ ...LECON, importance: 3 });
+        egal(basse.importance, 1, 'Importance minimale');
+        egal(haute.importance, 3, 'Importance maximale');
+      });
+
+      await tester('Lecture : liste vide au départ, puis obtenirLecon() et listerLecons()', async () => {
+        egalJson(await listerLecons(), [], 'La liste doit être vide au départ');
+        const a = await ajouterLecon(LECON);
+        const b = await ajouterLecon({ ...LECON, titre: 'Les décimaux', importance: 3 });
+        egalJson(await obtenirLecon(a.id), a, 'La leçon relue doit être identique à celle ajoutée');
+        const toutes = await listerLecons();
+        egal(toutes.length, 2, 'Nombre de leçons');
+        egal(toutes[0].id, a.id, 'La plus ancienne doit venir en premier');
+        egal(toutes[1].id, b.id, 'La plus récente doit venir en dernier');
+      });
+
+      await tester('modifierLecon() : change les champs demandés et met à jour modifieLe', async () => {
+        const lecon = await ajouterLecon(LECON);
+        await attendre(10);
+        const modifiee = await modifierLecon(lecon.id, { titre: 'Les fractions simples', importance: 3 });
+        egal(modifiee.titre, 'Les fractions simples', 'Titre modifié');
+        egal(modifiee.importance, 3, 'Importance modifiée');
+        egal(modifiee.matiere, lecon.matiere, 'La matière ne doit pas changer');
+        egal(modifiee.texte, lecon.texte, 'Le texte ne doit pas changer');
+        egal(modifiee.id, lecon.id, 'L’identifiant ne doit pas changer');
+        egal(modifiee.creeLe, lecon.creeLe, 'creeLe ne doit pas changer');
+        vrai(modifiee.modifieLe > lecon.modifieLe, 'modifieLe doit être plus récent');
+        egalJson(await obtenirLecon(lecon.id), modifiee, 'Relecture après modification');
+      });
+
+      await tester('La synthèse peut être enregistrée puis effacée (null)', async () => {
+        const lecon = await ajouterLecon(LECON);
+        const avec = await modifierLecon(lecon.id, { synthese: 'Une fraction = numérateur / dénominateur.' });
+        egal(avec.synthese, 'Une fraction = numérateur / dénominateur.', 'Synthèse enregistrée');
+        const sansSynthese = await modifierLecon(lecon.id, { synthese: null });
+        egal(sansSynthese.synthese, null, 'Synthèse effacée');
+      });
+
+      await tester('Les données restent après fermeture et réouverture de la base', async () => {
+        const lecon = await ajouterLecon(LECON);
+        const [question] = await ajouterQuestions(lecon.id, [QUESTIONS[0]]);
+        await fermerBase();
+        egalJson(await obtenirLecon(lecon.id), lecon, 'Leçon après réouverture');
+        egalJson(await listerQuestions(lecon.id), [question], 'Question après réouverture');
+      });
+
+      groupe('Questions');
+
+      await tester('ajouterQuestions() : valeurs de départ et ordre conservé', async () => {
+        const lecon = await ajouterLecon(LECON);
+        const creees = await ajouterQuestions(lecon.id, QUESTIONS);
+        egal(creees.length, 3, 'Nombre de questions créées');
+        const relues = await listerQuestions(lecon.id);
+        egal(relues.length, 3, 'Nombre de questions relues');
+        relues.forEach((q, i) => {
+          egal(q.leconId, lecon.id, 'leconId de la question ' + (i + 1));
+          egal(q.question, QUESTIONS[i].question, 'Texte de la question ' + (i + 1) + ' (ordre conservé)');
+          egal(q.reponse, QUESTIONS[i].reponse, 'Réponse de la question ' + (i + 1));
+          egal(q.boite, 1, 'Boîte de départ de la question ' + (i + 1));
+          egal(q.prochaineRevision, dateLocale(), 'prochaineRevision de la question ' + (i + 1));
+          vrai(/^\d{4}-\d{2}-\d{2}$/.test(q.prochaineRevision), 'prochaineRevision doit être AAAA-MM-JJ');
+          vrai(Array.isArray(q.historique) && q.historique.length === 0, 'Historique vide au départ');
+        });
+        return 'Prochaine révision de départ : ' + relues[0].prochaineRevision + ' (jour local)';
+      });
+
+      await tester('listerQuestions() ne renvoie que les questions de la leçon demandée', async () => {
+        const a = await ajouterLecon(LECON);
+        const b = await ajouterLecon({ ...LECON, titre: 'Les décimaux' });
+        await ajouterQuestions(a.id, QUESTIONS);
+        await ajouterQuestions(b.id, [QUESTIONS[0]]);
+        egal((await listerQuestions(a.id)).length, 3, 'Questions de la leçon A');
+        egal((await listerQuestions(b.id)).length, 1, 'Questions de la leçon B');
+        egalJson(await listerQuestions('id-qui-nexiste-pas'), [], 'Leçon inconnue : liste vide');
+      });
+
+      await tester('supprimerQuestion() supprime une seule question', async () => {
+        const lecon = await ajouterLecon(LECON);
+        const creees = await ajouterQuestions(lecon.id, QUESTIONS);
+        await supprimerQuestion(creees[1].id);
+        const restantes = await listerQuestions(lecon.id);
+        egal(restantes.length, 2, 'Il doit rester 2 questions');
+        egal(restantes[0].id, creees[0].id, 'La première doit rester');
+        egal(restantes[1].id, creees[2].id, 'La troisième doit rester');
+        return await rejette(supprimerQuestion(creees[1].id), 'INTROUVABLE');
+      });
+
+      groupe('Suppression en cascade');
+
+      await tester('supprimerLecon() supprime aussi ses questions, et seulement les siennes', async () => {
+        const a = await ajouterLecon(LECON);
+        const b = await ajouterLecon({ ...LECON, titre: 'Les décimaux' });
+        await ajouterQuestions(a.id, [QUESTIONS[0], QUESTIONS[1]]);
+        await ajouterQuestions(b.id, [QUESTIONS[2]]);
+
+        const nombre = await supprimerLecon(a.id);
+        egal(nombre, 2, 'Nombre de questions supprimées avec la leçon');
+        await rejette(obtenirLecon(a.id), 'INTROUVABLE');
+        egalJson(await listerQuestions(a.id), [], 'Les questions de la leçon supprimée doivent avoir disparu');
+        egal((await listerQuestions(b.id)).length, 1, 'Les questions de l’autre leçon doivent rester');
+        egal((await listerLecons()).length, 1, 'Il doit rester une seule leçon');
+        return nombre + ' questions supprimées avec la leçon.';
+      });
+
+      await tester('supprimerLecon() d’une leçon sans question renvoie 0', async () => {
+        const lecon = await ajouterLecon(LECON);
+        egal(await supprimerLecon(lecon.id), 0, 'Nombre de questions supprimées');
+        egal((await listerLecons()).length, 0, 'Plus aucune leçon');
+      });
+
+      groupe('Valeurs refusées : ajout d’une leçon');
+
+      const refusAjoutLecon = [
+        ['aucun objet (undefined)', undefined],
+        ['null', null],
+        ['un tableau au lieu d’un objet', []],
+        ['titre vide', { ...LECON, titre: '' }],
+        ['titre fait uniquement d’espaces', { ...LECON, titre: '   ' }],
+        ['titre qui n’est pas un texte (42)', { ...LECON, titre: 42 }],
+        ['titre de 201 caractères', { ...LECON, titre: 'a'.repeat(201) }],
+        ['titre manquant', sans(LECON, 'titre')],
+        ['matière manquante', sans(LECON, 'matiere')],
+        ['texte vide', { ...LECON, texte: '' }],
+        ['texte manquant', sans(LECON, 'texte')],
+        ['importance 0', { ...LECON, importance: 0 }],
+        ['importance 4', { ...LECON, importance: 4 }],
+        ['importance 2.5', { ...LECON, importance: 2.5 }],
+        ['importance « 2 » en texte', { ...LECON, importance: '2' }],
+        ['importance NaN', { ...LECON, importance: NaN }],
+        ['importance manquante', sans(LECON, 'importance')],
+        ['champ inconnu (faute de frappe « importace »)', { ...LECON, importace: 2 }],
+        ['synthèse fournie à la création', { ...LECON, synthese: 'x' }]
+      ];
+      for (const [libelle, valeur] of refusAjoutLecon) {
+        await tester('Refusé : ' + libelle, () => rejette(ajouterLecon(valeur), 'VALIDATION'));
+      }
+
+      await tester('Après des ajouts refusés, aucune leçon n’est enregistrée', async () => {
+        for (const [, valeur] of refusAjoutLecon) {
+          try { await ajouterLecon(valeur); } catch (erreur) { /* attendu */ }
+        }
+        egal((await listerLecons()).length, 0, 'Nombre de leçons enregistrées');
+      });
+
+      groupe('Valeurs refusées : modification d’une leçon');
+
+      const refusModification = [
+        ['aucun champ à modifier ({})', {}],
+        ['aucun objet (null)', null],
+        ['champ « id » (interdit)', { id: 'autre' }],
+        ['champ « creeLe » (interdit)', { creeLe: '2020-01-01T00:00:00.000Z' }],
+        ['champ « modifieLe » (interdit)', { modifieLe: '2020-01-01T00:00:00.000Z' }],
+        ['champ inconnu', { couleur: 'rouge' }],
+        ['titre vide', { titre: '' }],
+        ['importance 5', { importance: 5 }],
+        ['synthèse qui n’est pas un texte (42)', { synthese: 42 }],
+        ['synthèse vide (utiliser null pour effacer)', { synthese: '' }],
+        ['une bonne valeur et une mauvaise (rien ne doit changer)', { titre: 'Nouveau titre', importance: 9 }]
+      ];
+      for (const [libelle, modifs] of refusModification) {
+        await tester('Refusé : ' + libelle, async () => {
+          const lecon = await ajouterLecon(LECON);
+          const message = await rejette(modifierLecon(lecon.id, modifs), 'VALIDATION');
+          egalJson(await obtenirLecon(lecon.id), lecon, 'La leçon ne doit pas avoir changé');
+          return message;
+        });
+      }
+
+      groupe('Valeurs refusées : ajout de questions');
+
+      const refusQuestions = [
+        ['liste vide', []],
+        ['liste qui n’est pas un tableau', 'texte'],
+        ['élément null', [null]],
+        ['question sans réponse', [{ question: 'Q ?' }]],
+        ['réponse sans question', [{ reponse: 'R' }]],
+        ['question vide', [{ question: '   ', reponse: 'R' }]],
+        ['réponse vide', [{ question: 'Q ?', reponse: '' }]],
+        ['question qui n’est pas un texte (7)', [{ question: 7, reponse: 'R' }]],
+        ['question de 1001 caractères', [{ question: 'a'.repeat(1001), reponse: 'R' }]],
+        ['boîte imposée par l’appelant', [{ question: 'Q ?', reponse: 'R', boite: 5 }]],
+        ['date de révision imposée par l’appelant', [{ question: 'Q ?', reponse: 'R', prochaineRevision: '2030-01-01' }]],
+        ['lot mixte : une bonne question puis une mauvaise', [{ question: 'Q1 ?', reponse: 'R1' }, { question: '', reponse: 'R2' }]]
+      ];
+      for (const [libelle, liste] of refusQuestions) {
+        await tester('Refusé : ' + libelle + ' (rien ne doit être enregistré)', async () => {
+          const lecon = await ajouterLecon(LECON);
+          const message = await rejette(ajouterQuestions(lecon.id, liste), 'VALIDATION');
+          egalJson(await listerQuestions(lecon.id), [], 'Aucune question ne doit avoir été enregistrée');
+          return message;
+        });
+      }
+
+      await tester('Refusé : ajouter des questions à une leçon inexistante', () =>
+        rejette(ajouterQuestions('id-qui-nexiste-pas', [QUESTIONS[0]]), 'INTROUVABLE'));
+
+      groupe('Identifiants invalides ou inconnus');
+
+      const identifiantsInvalides = [
+        ['obtenirLecon(\'\')', () => obtenirLecon('')],
+        ['obtenirLecon(42)', () => obtenirLecon(42)],
+        ['modifierLecon(null, …)', () => modifierLecon(null, { titre: 'x' })],
+        ['supprimerLecon(undefined)', () => supprimerLecon(undefined)],
+        ['ajouterQuestions(\'\', …)', () => ajouterQuestions('', [QUESTIONS[0]])],
+        ['listerQuestions(undefined)', () => listerQuestions(undefined)],
+        ['supprimerQuestion(\'  \')', () => supprimerQuestion('  ')]
+      ];
+      for (const [libelle, appel] of identifiantsInvalides) {
+        await tester('Refusé : ' + libelle, () => rejette(appel(), 'VALIDATION'));
+      }
+
+      const identifiantsInconnus = [
+        ['obtenirLecon() avec un identifiant inconnu', () => obtenirLecon('inconnu')],
+        ['modifierLecon() avec un identifiant inconnu', () => modifierLecon('inconnu', { titre: 'x' })],
+        ['supprimerLecon() avec un identifiant inconnu', () => supprimerLecon('inconnu')],
+        ['supprimerQuestion() avec un identifiant inconnu', () => supprimerQuestion('inconnu')]
+      ];
+      for (const [libelle, appel] of identifiantsInconnus) {
+        await tester('Introuvable : ' + libelle, () => rejette(appel(), 'INTROUVABLE'));
+      }
+
+      groupe('Protection de la base principale');
+
+      await tester('supprimerBase() refuse de supprimer la vraie base', () =>
+        rejette(supprimerBase('revision-db'), 'VALIDATION'));
+
+      await tester('choisirBase() refuse un nom sans le préfixe « revision- »', () =>
+        rejette(choisirBase('autre-chose'), 'VALIDATION'));
+    } finally {
+      await supprimerBase(NOM_TEST).catch(() => {});
+      const total = reussis + echoues;
+      if (echoues === 0) {
+        bilan.dataset.etat = 'ok';
+        bilan.textContent = total + ' tests réussis sur ' + total + '. Le module de données est prêt.';
+      } else {
+        bilan.dataset.etat = 'ko';
+        bilan.textContent = echoues + ' échec(s) sur ' + total + ' tests. Voir les lignes rouges ci-dessous.';
+      }
+    }
+  </script>
+</body>
+</html>
