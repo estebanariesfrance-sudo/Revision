@@ -4,7 +4,7 @@
 // Pour publier une mise à jour : change simplement cette valeur
 // (v1 -> v2 -> v3...). L'ancien cache sera supprimé automatiquement.
 // ============================================================
-const VERSION = 'v1';
+const VERSION = 'v2';
 
 const PREFIXE = 'revision-';
 const CACHE_NAME = PREFIXE + VERSION;
@@ -16,7 +16,9 @@ const FICHIERS = [
   './index.html',
   './manifest.webmanifest',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  './db.js',
+  './test-db.html'
 ];
 
 // Installation : on télécharge tous les fichiers et on les range dans le cache.
