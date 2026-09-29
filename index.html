@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Révision</title>
+  <meta name="theme-color" content="#1f4fd8">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fond: #f4f6f8;
+      --carte: #ffffff;
+      --encre: #16202e;
+      --discret: #5b6776;
+      --trait: #d8dee6;
+      --accent: #1f4fd8;
+      --ok: #17734a;
+      --attention: #8a5a00;
+      --ko: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fond: #0f141b;
+        --carte: #171e28;
+        --encre: #e7ecf3;
+        --discret: #9aa6b6;
+        --trait: #2a3442;
+        --accent: #7aa2ff;
+        --ok: #5fd39a;
+        --attention: #f0b44c;
+        --ko: #ff8a80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--fond);
+      color: var(--encre);
+      font: 1.0625rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main {
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 3rem;
+    }
+    h1 {
+      margin: 0 0 .35rem;
+      font-size: 2.25rem;
+      line-height: 1.15;
+      letter-spacing: -.01em;
+      color: var(--accent);
+    }
+    .sous { margin: 0 0 2rem; color: var(--discret); }
+    .tests {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: .75rem;
+    }
+    .test {
+      background: var(--carte);
+      border: 1px solid var(--trait);
+      border-left-width: .35rem;
+      border-radius: .5rem;
+      padding: .9rem 1rem;
+    }
+    .test[data-etat="ok"] { border-left-color: var(--ok); }
+    .test[data-etat="attention"] { border-left-color: var(--attention); }
+    .test[data-etat="ko"] { border-left-color: var(--ko); }
+    .ligne {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+    }
+    .nom, .etat { font-weight: 600; }
+    .test[data-etat="ok"] .etat { color: var(--ok); }
+    .test[data-etat="attention"] .etat { color: var(--attention); }
+    .test[data-etat="ko"] .etat { color: var(--ko); }
+    .test[data-etat="attente"] .etat { color: var(--discret); }
+    .detail {
+      margin: .35rem 0 0;
+      color: var(--discret);
+      font-size: .95rem;
+      overflow-wrap: anywhere;
+    }
+    .detail:empty { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Application prête</h1>
+    <p class="sous">Étape 0 : vérification du socle technique.</p>
+
+    <ul class="tests" aria-live="polite">
+      <li class="test" id="t-idb" data-etat="attente">
+        <div class="ligne"><span class="nom">Stockage IndexedDB</span><span class="etat">En cours…</span></div>
+        <p class="detail"></p>
+      </li>
+      <li class="test" id="t-persist" data-etat="attente">
+        <div class="ligne"><span class="nom">Stockage persistant</span><span class="etat">En cours…</span></div>
+        <p class="detail"></p>
+      </li>
+      <li class="test" id="t-sw" data-etat="attente">
+        <div class="ligne"><span class="nom">Mode hors ligne</span><span class="etat">En cours…</span></div>
+        <p class="detail"></p>
+      </li>
+    </ul>
+  </main>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const NOM_BASE = 'revision-test';
+      const NOM_STORE = 'essais';
+
+      function afficher(id, etat, libelle, detail) {
+        const carte = document.getElementById(id);
+        carte.dataset.etat = etat;
+        carte.querySelector('.etat').textContent = libelle;
+        carte.querySelector('.detail').textContent = detail || '';
+      }
+
+      function enMo(octets) {
+        return (octets / 1048576).toFixed(1).replace('.', ',');
+      }
+
+      // ---------- Test 1 : IndexedDB (écriture puis lecture) ----------
+      function ouvrirBase() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open(NOM_BASE, 1);
+          req.onupgradeneeded = () => {
+            req.result.createObjectStore(NOM_STORE, { keyPath: 'id' });
+          };
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+          req.onblocked = () => reject(new Error('Ouverture de la base bloquée'));
+        });
+      }
+
+      async function testerIndexedDB() {
+        if (!('indexedDB' in window)) throw new Error('IndexedDB indisponible');
+        const db = await ouvrirBase();
+        try {
+          const valeur = 'essai ' + new Date().toISOString();
+
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction(NOM_STORE, 'readwrite');
+            tx.objectStore(NOM_STORE).put({ id: 'ping', valeur });
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error || new Error('Transaction annulée'));
+          });
+
+          const lu = await new Promise((resolve, reject) => {
+            const req = db.transaction(NOM_STORE, 'readonly').objectStore(NOM_STORE).get('ping');
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+
+          if (!lu || lu.valeur !== valeur) throw new Error('La valeur relue ne correspond pas à celle écrite');
+          return { etat: 'ok', libelle: 'OK', detail: 'Écrit puis relu : « ' + lu.valeur + ' »' };
+        } finally {
+          db.close();
+        }
+      }
+
+      // ---------- Test 2 : navigator.storage.persist() ----------
+      async function testerPersistance() {
+        if (!navigator.storage || !navigator.storage.persist) {
+          throw new Error('API de stockage persistant indisponible');
+        }
+        const deja = await navigator.storage.persisted();
+        const accorde = deja || await navigator.storage.persist();
+
+        let espace = '';
+        if (navigator.storage.estimate) {
+          const { usage, quota } = await navigator.storage.estimate();
+          if (quota) espace = ' Espace utilisé : ' + enMo(usage) + ' Mo sur ' + enMo(quota) + ' Mo.';
+        }
+
+        if (accorde) {
+          return {
+            etat: 'ok',
+            libelle: 'Accordé',
+            detail: (deja ? 'Le stockage était déjà persistant.' : 'Demande acceptée.') + espace
+          };
+        }
+        return {
+          etat: 'attention',
+          libelle: 'Non accordé',
+          detail: 'Chrome décide seul, sans fenêtre de confirmation. C’est souvent accordé une fois l’application installée et utilisée.' + espace
+        };
+      }
+
+      // ---------- Test 3 : service worker (hors ligne) ----------
+      function demanderVersion(worker) {
+        return new Promise((resolve) => {
+          if (!worker) return resolve(null);
+          const canal = new MessageChannel();
+          canal.port1.onmessage = (e) => resolve(e.data);
+          worker.postMessage({ type: 'GET_VERSION' }, [canal.port2]);
+          setTimeout(() => resolve(null), 2000);
+        });
+      }
+
+      async function testerServiceWorker() {
+        if (!('serviceWorker' in navigator)) {
+          throw new Error('Service workers indisponibles (HTTPS ou localhost requis)');
+        }
+        await navigator.serviceWorker.register('./sw.js', { scope: './' });
+        const reg = await navigator.serviceWorker.ready;
+        const cache = await demanderVersion(reg.active);
+        return {
+          etat: 'ok',
+          libelle: 'Prêt',
+          detail: cache
+            ? 'Fichiers en cache (' + cache + '). L’application s’ouvre sans connexion.'
+            : 'Service worker actif. L’application s’ouvre sans connexion.'
+        };
+      }
+
+      // ---------- Lancement : chaque test est indépendant ----------
+      async function lancer(id, test) {
+        try {
+          const r = await test();
+          afficher(id, r.etat, r.libelle, r.detail);
+        } catch (erreur) {
+          afficher(id, 'ko', 'Échec', erreur && erreur.message ? erreur.message : String(erreur));
+        }
+      }
+
+      lancer('t-idb', testerIndexedDB);
+      lancer('t-persist', testerPersistance);
+      lancer('t-sw', testerServiceWorker);
+    })();
+  </script>
+</body>
+</html>
