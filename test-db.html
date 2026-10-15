@@ -108,7 +108,8 @@
       ErreurRevision, VERSION_SCHEMA, dateLocale,
       choisirBase, fermerBase, supprimerBase,
       ajouterLecon, listerLecons, obtenirLecon, modifierLecon, supprimerLecon,
-      ajouterQuestions, listerQuestions, supprimerQuestion
+      ajouterQuestions, listerQuestions, supprimerQuestion,
+      listerQuestionsDues, enregistrerReponse
     } = module;
 
     // ---------- Petit outillage de test ----------
@@ -203,6 +204,14 @@
       return copie;
     }
 
+    // Jour local décalé de n jours, calculé avec new Date(année, mois, jour + n) : jamais en millisecondes.
+    function jourDecale(n) {
+      const aujourdHui = new Date();
+      return dateLocale(new Date(aujourdHui.getFullYear(), aujourdHui.getMonth(), aujourdHui.getDate() + n));
+    }
+
+    const ids = (liste) => liste.map((element) => element.id);
+
     const LECON = {
       titre: 'Les fractions',
       matiere: 'Mathématiques',
@@ -215,6 +224,30 @@
       { question: 'Comment s’appelle le nombre du bas ?', reponse: 'Le dénominateur.' },
       { question: 'Comment s’appelle le nombre du haut ?', reponse: 'Le numérateur.' }
     ];
+
+    const PLAN = { boite: 2, prochaineRevision: '2026-10-05' };
+
+    // Crée une leçon avec ses premières questions (toutes à réviser aujourd'hui au départ).
+    async function preparerLecon(titre, importance, nombreQuestions) {
+      const lecon = await ajouterLecon({ ...LECON, titre, importance });
+      const questions = await ajouterQuestions(lecon.id, QUESTIONS.slice(0, nombreQuestions));
+      return { lecon, questions };
+    }
+
+    // Replanifie une question à un jour donné (sert à fabriquer des questions en retard ou à venir).
+    function planifier(question, jour, boite = 2) {
+      return enregistrerReponse(question.id, 'reussi', { boite, prochaineRevision: jour });
+    }
+
+    // Tente d'enregistrer une réponse invalide : doit être refusée, et la question ne doit pas changer.
+    async function essaiRefusReponse(resultat, planification) {
+      const { lecon, questions } = await preparerLecon('Fractions', 2, 1);
+      const avant = await listerQuestions(lecon.id);
+      const message = await rejette(enregistrerReponse(questions[0].id, resultat, planification), 'VALIDATION');
+      egalJson(await listerQuestions(lecon.id), avant, 'La question ne doit pas avoir changé');
+      egal(avant[0].historique.length, 0, 'L’historique doit rester vide');
+      return message;
+    }
 
     // ---------- Les tests ----------
     try {
@@ -242,6 +275,18 @@
         return message;
       });
 
+      await tester('Les jours décalés se calculent avec new Date(année, mois, jour + n), sans millisecondes', async () => {
+        egal(dateLocale(new Date(2026, 0, 31 + 1)), '2026-02-01', 'Fin de janvier');
+        egal(dateLocale(new Date(2026, 11, 31 + 1)), '2027-01-01', 'Fin d’année');
+        egal(dateLocale(new Date(2028, 1, 28 + 1)), '2028-02-29', 'Février d’une année bissextile');
+        egal(dateLocale(new Date(2027, 1, 28 + 1)), '2027-03-01', 'Février d’une année non bissextile');
+        egal(dateLocale(new Date(2026, 2, 28 + 3)), '2026-03-31', 'Autour du changement d’heure de mars');
+        egal(dateLocale(new Date(2026, 9, 24 + 2)), '2026-10-26', 'Autour du changement d’heure d’octobre');
+        egal(dateLocale(new Date(2026, 0, 1 - 1)), '2025-12-31', 'Jour négatif : retour à l’année précédente');
+        egal(jourDecale(0), dateLocale(), 'jourDecale(0) doit être aujourd’hui');
+        vrai(jourDecale(1) > jourDecale(0) && jourDecale(0) > jourDecale(-1), 'Les jours décalés doivent se suivre dans l’ordre');
+      });
+
       groupe('Schéma de la base');
 
       await tester('Le schéma version 1 contient les deux stores et leurs index', async () => {
@@ -254,6 +299,7 @@
         });
         try {
           egal(db.version, VERSION_SCHEMA, 'Version du schéma');
+          egal(db.version, 1, 'Le schéma doit être resté en version 1 (inchangé)');
           vrai(db.objectStoreNames.contains('lecons'), 'Store « lecons » absent');
           vrai(db.objectStoreNames.contains('questions'), 'Store « questions » absent');
           const transaction = db.transaction(['lecons', 'questions'], 'readonly');
@@ -504,6 +550,272 @@
       ];
       for (const [libelle, appel] of identifiantsInconnus) {
         await tester('Introuvable : ' + libelle, () => rejette(appel(), 'INTROUVABLE'));
+      }
+
+      groupe('Révision : enregistrerReponse()');
+
+      await tester('enregistrerReponse() met à jour boite, prochaineRevision et historique', async () => {
+        const { lecon, questions } = await preparerLecon('Fractions', 2, 1);
+        const [question] = questions;
+        const demain = jourDecale(1);
+        const miseAJour = await enregistrerReponse(question.id, 'reussi', { boite: 2, prochaineRevision: demain });
+        egal(miseAJour.boite, 2, 'Boîte');
+        egal(miseAJour.prochaineRevision, demain, 'Prochaine révision');
+        egal(miseAJour.historique.length, 1, 'Nombre d’entrées d’historique');
+        egalJson(miseAJour.historique[0], { date: dateLocale(), resultat: 'reussi' }, 'Entrée d’historique (date locale du jour)');
+        egal(miseAJour.id, question.id, 'L’identifiant ne doit pas changer');
+        egal(miseAJour.leconId, lecon.id, 'leconId ne doit pas changer');
+        egal(miseAJour.question, question.question, 'L’énoncé ne doit pas changer');
+        egal(miseAJour.reponse, question.reponse, 'La réponse ne doit pas changer');
+        egalJson(await listerQuestions(lecon.id), [miseAJour], 'La question relue doit être identique à celle renvoyée');
+        return 'Boîte 1 → 2, prochaine révision le ' + demain + ', date de l’historique : ' + miseAJour.historique[0].date;
+      });
+
+      await tester('Les réponses s’accumulent dans l’historique, dans l’ordre (rate, hesite, reussi)', async () => {
+        const { questions } = await preparerLecon('Fractions', 2, 1);
+        const id = questions[0].id;
+        await enregistrerReponse(id, 'rate', { boite: 1, prochaineRevision: jourDecale(1) });
+        await enregistrerReponse(id, 'hesite', { boite: 2, prochaineRevision: jourDecale(2) });
+        const finale = await enregistrerReponse(id, 'reussi', { boite: 3, prochaineRevision: jourDecale(4) });
+        egalJson(finale.historique.map((entree) => entree.resultat), ['rate', 'hesite', 'reussi'], 'Ordre des résultats');
+        egal(finale.boite, 3, 'La boîte doit refléter la dernière réponse');
+        egal(finale.prochaineRevision, jourDecale(4), 'La prochaine révision doit refléter la dernière réponse');
+        finale.historique.forEach((entree, i) => {
+          egalJson(Object.keys(entree), ['date', 'resultat'], 'Champs de l’entrée ' + (i + 1));
+          vrai(/^\d{4}-\d{2}-\d{2}$/.test(entree.date), 'La date de l’entrée ' + (i + 1) + ' doit être AAAA-MM-JJ');
+        });
+      });
+
+      await tester('Les boîtes 1 et 7 (bornes) sont acceptées', async () => {
+        const { questions } = await preparerLecon('Fractions', 2, 2);
+        const basse = await enregistrerReponse(questions[0].id, 'rate', { boite: 1, prochaineRevision: jourDecale(0) });
+        const haute = await enregistrerReponse(questions[1].id, 'reussi', { boite: 7, prochaineRevision: jourDecale(60) });
+        egal(basse.boite, 1, 'Boîte minimale');
+        egal(haute.boite, 7, 'Boîte maximale');
+        egal(haute.prochaineRevision, jourDecale(60), 'Date à 60 jours');
+      });
+
+      await tester('Le 29 février d’une année bissextile est accepté comme prochaine révision', async () => {
+        const { questions } = await preparerLecon('Fractions', 2, 1);
+        const miseAJour = await enregistrerReponse(questions[0].id, 'reussi', { boite: 4, prochaineRevision: '2028-02-29' });
+        egal(miseAJour.prochaineRevision, '2028-02-29', 'Prochaine révision');
+      });
+
+      await tester('Répondre à une question ne modifie pas les autres questions', async () => {
+        const { lecon, questions } = await preparerLecon('Fractions', 2, 3);
+        const avant = await listerQuestions(lecon.id);
+        await enregistrerReponse(questions[1].id, 'hesite', { boite: 2, prochaineRevision: jourDecale(2) });
+        const apres = await listerQuestions(lecon.id);
+        egalJson(apres[0], avant[0], 'La première question ne doit pas changer');
+        egalJson(apres[2], avant[2], 'La troisième question ne doit pas changer');
+        egal(apres[1].historique.length, 1, 'Seule la deuxième question reçoit une entrée');
+      });
+
+      await tester('Deux réponses enregistrées en même temps ne s’écrasent pas', async () => {
+        const { lecon, questions } = await preparerLecon('Fractions', 2, 1);
+        await Promise.all([
+          enregistrerReponse(questions[0].id, 'reussi', { boite: 2, prochaineRevision: jourDecale(2) }),
+          enregistrerReponse(questions[0].id, 'rate', { boite: 1, prochaineRevision: jourDecale(1) })
+        ]);
+        const finale = (await listerQuestions(lecon.id))[0];
+        egal(finale.historique.length, 2, 'Les deux réponses doivent être dans l’historique');
+        egalJson(finale.historique.map((entree) => entree.resultat).sort(), ['rate', 'reussi'], 'Résultats enregistrés');
+      });
+
+      await tester('La réponse enregistrée reste après fermeture et réouverture de la base', async () => {
+        const { lecon, questions } = await preparerLecon('Fractions', 2, 1);
+        const miseAJour = await enregistrerReponse(questions[0].id, 'reussi', { boite: 3, prochaineRevision: jourDecale(3) });
+        await fermerBase();
+        egalJson(await listerQuestions(lecon.id), [miseAJour], 'Question après réouverture');
+      });
+
+      groupe('Révision : listerQuestionsDues()');
+
+      await tester('Aucune question : la liste des questions dues est vide', async () => {
+        egalJson(await listerQuestionsDues(dateLocale()), [], 'Liste vide');
+      });
+
+      await tester('Questions dues : celles d’aujourd’hui et en retard, de la plus en retard à la moins en retard, avec titre et importance', async () => {
+        const a = await preparerLecon('Fractions', 3, 3);
+        const b = await preparerLecon('Décimaux', 1, 1);
+        const [q1, q2, q3] = a.questions;
+        const [q4] = b.questions;
+        await planifier(q1, jourDecale(-1));  // en retard d’un jour
+        // q2 garde sa date de départ : aujourd’hui
+        await planifier(q3, jourDecale(1));   // demain : pas encore due
+        await planifier(q4, jourDecale(-3));  // en retard de trois jours
+
+        const dues = await listerQuestionsDues(dateLocale());
+        egalJson(ids(dues), [q4.id, q1.id, q2.id], 'Questions dues (du plus grand retard à aujourd’hui)');
+        const parId = new Map(dues.map((question) => [question.id, question]));
+        egal(parId.get(q4.id).leconTitre, 'Décimaux', 'Titre de la leçon de q4');
+        egal(parId.get(q4.id).leconImportance, 1, 'Importance de la leçon de q4');
+        egal(parId.get(q1.id).leconTitre, 'Fractions', 'Titre de la leçon de q1');
+        egal(parId.get(q1.id).leconImportance, 3, 'Importance de la leçon de q1');
+        egal(parId.get(q2.id).leconTitre, 'Fractions', 'Titre de la leçon de q2');
+        egal(parId.get(q2.id).leconImportance, 3, 'Importance de la leçon de q2');
+        return dues.length + ' questions dues le ' + dateLocale() + ' (la 4e est prévue demain).';
+      });
+
+      await tester('Le jour demandé est inclus (≤) : hier exclut aujourd’hui, demain inclut tout', async () => {
+        const a = await preparerLecon('Fractions', 3, 3);
+        const b = await preparerLecon('Décimaux', 1, 1);
+        const [q1, q2, q3] = a.questions;
+        const [q4] = b.questions;
+        await planifier(q1, jourDecale(-1));
+        await planifier(q3, jourDecale(1));
+        await planifier(q4, jourDecale(-3));
+        egalJson(ids(await listerQuestionsDues(jourDecale(-1))), [q4.id, q1.id], 'Dues hier : la question d’aujourd’hui est exclue');
+        egalJson(ids(await listerQuestionsDues(jourDecale(-4))), [], 'Dues il y a 4 jours : aucune');
+        egalJson(ids(await listerQuestionsDues(jourDecale(-3))), [q4.id], 'Dues il y a 3 jours : la date égale est incluse');
+        egalJson(ids(await listerQuestionsDues(jourDecale(1))), [q4.id, q1.id, q2.id, q3.id], 'Dues demain : toutes');
+      });
+
+      await tester('Les frontières de mois et d’année sont bien ordonnées', async () => {
+        const { questions } = await preparerLecon('Frontières', 2, 3);
+        const [qa, qb, qc] = questions;
+        await planifier(qa, '2026-12-31');
+        await planifier(qb, '2027-01-01');
+        await planifier(qc, '2026-09-30');
+        egalJson(ids(await listerQuestionsDues('2026-09-29')), [], 'Avant la première date');
+        egalJson(ids(await listerQuestionsDues('2026-09-30')), [qc.id], 'Le 30 septembre');
+        egalJson(ids(await listerQuestionsDues('2026-10-01')), [qc.id], 'Le 1er octobre : rien de nouveau');
+        egalJson(ids(await listerQuestionsDues('2026-12-31')), [qc.id, qa.id], 'Le 31 décembre');
+        egalJson(ids(await listerQuestionsDues('2027-01-01')), [qc.id, qa.id, qb.id], 'Le 1er janvier suivant');
+      });
+
+      await tester('À date égale, les questions dues restent dans l’ordre de création', async () => {
+        const { questions } = await preparerLecon('Fractions', 2, 3);
+        egalJson(ids(await listerQuestionsDues(dateLocale())), ids(questions), 'Ordre de création');
+      });
+
+      await tester('Une question due contient tous ses champs, plus leconTitre et leconImportance', async () => {
+        await preparerLecon('Fractions', 2, 1);
+        const due = (await listerQuestionsDues(dateLocale()))[0];
+        egalJson(
+          Object.keys(due).sort(),
+          ['boite', 'historique', 'id', 'leconId', 'leconImportance', 'leconTitre', 'prochaineRevision', 'question', 'reponse'],
+          'Champs d’une question due'
+        );
+        egal(due.boite, 1, 'Boîte de départ');
+        egalJson(due.historique, [], 'Historique vide');
+      });
+
+      await tester('Le titre et l’importance renvoyés suivent les modifications de la leçon', async () => {
+        const { lecon } = await preparerLecon('Fractions', 2, 1);
+        await modifierLecon(lecon.id, { titre: 'Fractions simples', importance: 1 });
+        const due = (await listerQuestionsDues(dateLocale()))[0];
+        egal(due.leconTitre, 'Fractions simples', 'Nouveau titre');
+        egal(due.leconImportance, 1, 'Nouvelle importance');
+      });
+
+      await tester('Après la suppression d’une leçon, ses questions ne sont plus dues', async () => {
+        const a = await preparerLecon('Fractions', 2, 2);
+        const b = await preparerLecon('Décimaux', 1, 1);
+        await supprimerLecon(a.lecon.id);
+        egalJson(ids(await listerQuestionsDues(dateLocale())), ids(b.questions), 'Seules les questions de l’autre leçon restent');
+      });
+
+      await tester('Cycle complet : répondre retire la question des dues, sauf si elle est replanifiée aujourd’hui', async () => {
+        const { questions } = await preparerLecon('Fractions', 2, 2);
+        const [q1, q2] = questions;
+        egal((await listerQuestionsDues(dateLocale())).length, 2, 'Deux questions dues au départ');
+        await enregistrerReponse(q1.id, 'reussi', { boite: 2, prochaineRevision: jourDecale(2) });
+        await enregistrerReponse(q2.id, 'rate', { boite: 1, prochaineRevision: dateLocale() });
+        const dues = await listerQuestionsDues(dateLocale());
+        egalJson(ids(dues), [q2.id], 'Seule la question ratée reste due aujourd’hui');
+        egal(dues[0].historique[0].resultat, 'rate', 'Son historique contient la réponse');
+        egalJson(ids(await listerQuestionsDues(jourDecale(1))), [q2.id], 'Demain : toujours seule');
+        egalJson(ids(await listerQuestionsDues(jourDecale(2))), [q2.id, q1.id], 'Dans deux jours : les deux');
+      });
+
+      await tester('listerQuestionsDues() accepte le 29 février d’une année bissextile', async () => {
+        const dues = await listerQuestionsDues('2028-02-29');
+        vrai(Array.isArray(dues), 'Une liste est attendue');
+      });
+
+      groupe('Valeurs refusées : révision');
+
+      const refusResultat = [
+        ['résultat « Reussi » (majuscule)', 'Reussi'],
+        ['résultat « réussi » (avec accents)', 'réussi'],
+        ['résultat « ok »', 'ok'],
+        ['résultat vide', ''],
+        ['résultat null', null],
+        ['résultat en nombre (1)', 1],
+        ['résultat absent (undefined)', undefined]
+      ];
+      for (const [libelle, valeur] of refusResultat) {
+        await tester('Refusé : ' + libelle, () => essaiRefusReponse(valeur, PLAN));
+      }
+
+      const refusPlanification = [
+        ['planification absente (undefined)', undefined],
+        ['planification null', null],
+        ['planification en tableau', []],
+        ['planification vide ({})', {}],
+        ['boîte sans date', { boite: 2 }],
+        ['date sans boîte', { prochaineRevision: PLAN.prochaineRevision }],
+        ['boîte 0', { ...PLAN, boite: 0 }],
+        ['boîte 8', { ...PLAN, boite: 8 }],
+        ['boîte 2.5', { ...PLAN, boite: 2.5 }],
+        ['boîte « 2 » en texte', { ...PLAN, boite: '2' }],
+        ['boîte NaN', { ...PLAN, boite: NaN }],
+        ['boîte null', { ...PLAN, boite: null }],
+        ['date 2026-1-5 (sans zéros)', { ...PLAN, prochaineRevision: '2026-1-5' }],
+        ['date 05/10/2026', { ...PLAN, prochaineRevision: '05/10/2026' }],
+        ['date 2026-02-30 (inexistante)', { ...PLAN, prochaineRevision: '2026-02-30' }],
+        ['date 2027-02-29 (année non bissextile)', { ...PLAN, prochaineRevision: '2027-02-29' }],
+        ['date 2026-13-01 (mois 13)', { ...PLAN, prochaineRevision: '2026-13-01' }],
+        ['horodatage UTC complet', { ...PLAN, prochaineRevision: '2026-10-05T12:00:00.000Z' }],
+        ['date en nombre (20261005)', { ...PLAN, prochaineRevision: 20261005 }],
+        ['date null', { ...PLAN, prochaineRevision: null }],
+        ['date en objet Date', { ...PLAN, prochaineRevision: new Date() }],
+        ['date vide', { ...PLAN, prochaineRevision: '' }],
+        ['champ « historique » imposé par l’appelant', { ...PLAN, historique: [] }],
+        ['champ « resultat » en trop dans la planification', { ...PLAN, resultat: 'reussi' }],
+        ['champ inconnu (leconId)', { ...PLAN, leconId: 'x' }]
+      ];
+      for (const [libelle, valeur] of refusPlanification) {
+        await tester('Refusé : ' + libelle + ' (la question ne doit pas changer)', () => essaiRefusReponse('reussi', valeur));
+      }
+
+      const refusIdentifiantReponse = [
+        ['identifiant vide', ''],
+        ['identifiant en nombre (42)', 42],
+        ['identifiant null', null],
+        ['identifiant absent (undefined)', undefined]
+      ];
+      for (const [libelle, valeur] of refusIdentifiantReponse) {
+        await tester('Refusé : enregistrerReponse() avec un ' + libelle, () => rejette(enregistrerReponse(valeur, 'reussi', PLAN), 'VALIDATION'));
+      }
+
+      await tester('Introuvable : enregistrerReponse() avec un identifiant inconnu (rien n’est créé)', async () => {
+        const { lecon } = await preparerLecon('Fractions', 2, 1);
+        const avant = await listerQuestions(lecon.id);
+        const message = await rejette(enregistrerReponse('inconnu', 'reussi', PLAN), 'INTROUVABLE');
+        egalJson(await listerQuestions(lecon.id), avant, 'Les questions existantes ne doivent pas changer');
+        return message;
+      });
+
+      const refusJour = [
+        ['aucun jour (undefined)', undefined],
+        ['jour null', null],
+        ['jour vide', ''],
+        ['jour en nombre (20261005)', 20261005],
+        ['jour en objet Date', new Date()],
+        ['jour 2026-1-5 (sans zéros)', '2026-1-5'],
+        ['jour 05/10/2026', '05/10/2026'],
+        ['horodatage UTC complet', '2026-10-05T10:00:00.000Z'],
+        ['mois 13', '2026-13-01'],
+        ['mois 00', '2026-00-10'],
+        ['jour 32', '2026-10-32'],
+        ['30 février', '2026-02-30'],
+        ['29 février d’une année non bissextile', '2027-02-29'],
+        ['mot « demain »', 'demain']
+      ];
+      for (const [libelle, valeur] of refusJour) {
+        await tester('Refusé : listerQuestionsDues() avec ' + libelle, () => rejette(listerQuestionsDues(valeur), 'VALIDATION'));
       }
 
       groupe('Protection de la base principale');
