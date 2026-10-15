@@ -17,6 +17,11 @@ const IMPORTANCE_MIN = 1;
 const IMPORTANCE_MAX = 3;
 const BOITE_DEPART = 1;
 
+// Boîtes de révision (système de Leitner) et résultats possibles d’une réponse.
+export const BOITE_MIN = 1;
+export const BOITE_MAX = 7;
+export const RESULTATS_REPONSE = Object.freeze(['reussi', 'hesite', 'rate']);
+
 const LONGUEUR_MAX_TITRE = 200;
 const LONGUEUR_MAX_MATIERE = 100;
 const LONGUEUR_MAX_TEXTE = 500000;
@@ -28,6 +33,7 @@ const NOMBRE_MAX_QUESTIONS_PAR_AJOUT = 500;
 const CHAMPS_SAISIE_LECON = ['titre', 'matiere', 'importance', 'texte'];
 const CHAMPS_MODIFIABLES_LECON = ['titre', 'matiere', 'importance', 'texte', 'synthese'];
 const CHAMPS_SAISIE_QUESTION = ['question', 'reponse'];
+const CHAMPS_PLANIFICATION = ['boite', 'prochaineRevision'];
 
 // ------------------------------------------------------------
 // État interne du module
@@ -158,6 +164,38 @@ function validerImportance(valeur) {
 function validerId(valeur, libelle) {
   if (typeof valeur !== 'string' || valeur.trim() === '') {
     throw erreurValidation(`${libelle} doit être un texte non vide.`);
+  }
+  return valeur;
+}
+
+function validerBoite(valeur) {
+  if (!Number.isInteger(valeur) || valeur < BOITE_MIN || valeur > BOITE_MAX) {
+    throw erreurValidation(`La boîte doit être un nombre entier entre ${BOITE_MIN} et ${BOITE_MAX}.`);
+  }
+  return valeur;
+}
+
+// Vérifie une date locale « AAAA-MM-JJ » qui existe vraiment dans le calendrier.
+// Un horodatage UTC (« 2026-10-05T10:00:00Z ») est refusé : seul le jour local est accepté.
+// Aucun calcul en millisecondes : on compare simplement les composants année / mois / jour.
+function validerJour(valeur, libelle) {
+  if (typeof valeur !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(valeur)) {
+    throw erreurValidation(`${libelle} doit être une date locale au format AAAA-MM-JJ (par exemple 2026-10-05).`);
+  }
+  const annee = Number(valeur.slice(0, 4));
+  const mois = Number(valeur.slice(5, 7));
+  const jour = Number(valeur.slice(8, 10));
+  const controle = new Date(2000, 0, 1, 12); // midi : à l’abri des changements d’heure
+  controle.setFullYear(annee, mois - 1, jour);
+  if (controle.getFullYear() !== annee || controle.getMonth() !== mois - 1 || controle.getDate() !== jour) {
+    throw erreurValidation(`${libelle} : « ${valeur} » n’est pas une date qui existe dans le calendrier.`);
+  }
+  return valeur;
+}
+
+function validerResultat(valeur) {
+  if (typeof valeur !== 'string' || !RESULTATS_REPONSE.includes(valeur)) {
+    throw erreurValidation('Le résultat doit être « reussi », « hesite » ou « rate ».');
   }
   return valeur;
 }
@@ -514,5 +552,68 @@ export async function supprimerQuestion(id) {
     }
     magasin.delete(id);
     await fin;
+  });
+}
+
+// ------------------------------------------------------------
+// Révision
+// ------------------------------------------------------------
+// Renvoie les questions à réviser le jour donné (« AAAA-MM-JJ », date locale) :
+// toutes celles dont prochaineRevision est ce jour-là ou avant (les retards sont donc inclus).
+// Elles sont triées de la plus en retard à la moins en retard, puis dans l’ordre de création.
+// Chaque question est renvoyée avec en plus : leconTitre et leconImportance (null si la leçon avait disparu).
+export async function listerQuestionsDues(jour) {
+  validerJour(jour, 'Le jour');
+  return executer('Lecture des questions à réviser', async () => {
+    const db = await obtenirConnexion();
+    const transaction = db.transaction([STORE_LECONS, STORE_QUESTIONS], 'readonly');
+    // Les dates « AAAA-MM-JJ » se trient dans l’ordre chronologique : l’index suffit.
+    const dues = await demande(
+      transaction.objectStore(STORE_QUESTIONS).index('prochaineRevision').getAll(IDBKeyRange.upperBound(jour))
+    );
+
+    const lecons = transaction.objectStore(STORE_LECONS);
+    const idsLecons = [...new Set(dues.map((question) => question.leconId))];
+    const trouvees = await Promise.all(idsLecons.map((id) => demande(lecons.get(id))));
+    const leconParId = new Map(idsLecons.map((id, position) => [id, trouvees[position]]));
+
+    return dues.map((question) => {
+      const lecon = leconParId.get(question.leconId);
+      return {
+        ...question,
+        leconTitre: lecon ? lecon.titre : null,
+        leconImportance: lecon ? lecon.importance : null
+      };
+    });
+  });
+}
+
+// Enregistre la réponse à une question : resultat vaut 'reussi', 'hesite' ou 'rate', et
+// planification = { boite, prochaineRevision } est déjà calculée par le planificateur (pas ici).
+// La boîte, la prochaine révision et l’historique { date, resultat } sont mis à jour dans une seule transaction.
+// La date de l’historique est le jour local de la réponse. Renvoie la question mise à jour.
+export async function enregistrerReponse(questionId, resultat, planification) {
+  validerId(questionId, 'L’identifiant de la question');
+  validerResultat(resultat);
+  verifierChamps(planification, 'Planification', CHAMPS_PLANIFICATION, CHAMPS_PLANIFICATION);
+  const boite = validerBoite(planification.boite);
+  const prochaineRevision = validerJour(planification.prochaineRevision, 'La prochaine révision');
+  const entree = { date: dateLocale(), resultat };
+
+  return executer('Enregistrement de la réponse', async () => {
+    const db = await obtenirConnexion();
+    const transaction = db.transaction(STORE_QUESTIONS, 'readwrite');
+    const fin = suivre(transaction);
+    const magasin = transaction.objectStore(STORE_QUESTIONS);
+
+    const existante = await demande(magasin.get(questionId));
+    if (!existante) {
+      throw erreurIntrouvable(`Enregistrement impossible : question introuvable (identifiant « ${questionId} »).`);
+    }
+    const historique = Array.isArray(existante.historique) ? existante.historique : [];
+    const miseAJour = { ...existante, boite, prochaineRevision, historique: [...historique, entree] };
+    magasin.put(miseAJour);
+    await fin;
+    return miseAJour;
   });
 }
