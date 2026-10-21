@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tests du planificateur</title>
+  <meta name="theme-color" content="#1f4fd8">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fond: #f4f6f8;
+      --carte: #ffffff;
+      --encre: #16202e;
+      --discret: #5b6776;
+      --trait: #d8dee6;
+      --accent: #1f4fd8;
+      --ok: #17734a;
+      --ko: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fond: #0f141b;
+        --carte: #171e28;
+        --encre: #e7ecf3;
+        --discret: #9aa6b6;
+        --trait: #2a3442;
+        --accent: #7aa2ff;
+        --ok: #5fd39a;
+        --ko: #ff8a80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--fond);
+      color: var(--encre);
+      font: 1rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 44rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+    h1 { margin: 0 0 .35rem; font-size: 1.75rem; line-height: 1.2; color: var(--accent); }
+    .sous { margin: 0 0 1.25rem; color: var(--discret); }
+    code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
+    .bilan {
+      margin: 0 0 1.25rem;
+      padding: .8rem 1rem;
+      background: var(--carte);
+      border: 1px solid var(--trait);
+      border-left-width: .35rem;
+      border-radius: .5rem;
+      font-weight: 600;
+    }
+    .bilan[data-etat="ok"] { border-left-color: var(--ok); color: var(--ok); }
+    .bilan[data-etat="ko"] { border-left-color: var(--ko); color: var(--ko); }
+    .resultats { list-style: none; margin: 0 0 1.5rem; padding: 0; display: grid; gap: .5rem; }
+    .groupe { margin: 1rem 0 .1rem; font-size: 1.05rem; font-weight: 700; }
+    .test {
+      background: var(--carte);
+      border: 1px solid var(--trait);
+      border-left-width: .35rem;
+      border-radius: .5rem;
+      padding: .6rem .9rem;
+    }
+    .test[data-etat="ok"] { border-left-color: var(--ok); }
+    .test[data-etat="ko"] { border-left-color: var(--ko); }
+    .ligne { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    .nom { font-weight: 600; }
+    .etat { font-weight: 600; white-space: nowrap; }
+    .test[data-etat="ok"] .etat { color: var(--ok); }
+    .test[data-etat="ko"] .etat { color: var(--ko); }
+    .detail { margin: .3rem 0 0; color: var(--discret); font-size: .9rem; overflow-wrap: anywhere; }
+    button {
+      min-height: 48px;
+      font: inherit;
+      font-weight: 600;
+      padding: .7rem 1.2rem;
+      border: 0;
+      border-radius: .5rem;
+      background: var(--accent);
+      color: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) { button { color: #0f141b; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tests du planificateur</h1>
+    <p class="sous">Fonctions pures de <code>planificateur.js</code> : aucune base de données, aucune lecture de l’horloge. La date du jour est toujours imposée par chaque test.</p>
+    <p id="bilan" class="bilan" data-etat="attente" aria-live="polite">Tests en cours…</p>
+    <ol id="resultats" class="resultats"></ol>
+    <button id="relancer" type="button">Relancer les tests</button>
+  </main>
+
+  <script type="module">
+    const liste = document.getElementById('resultats');
+    const bilan = document.getElementById('bilan');
+    document.getElementById('relancer').addEventListener('click', () => location.reload());
+
+    // ---------- Chargement du module (l'erreur s'affiche à l'écran, pas seulement en console) ----------
+    let module;
+    try {
+      module = await import('./planificateur.js');
+    } catch (erreur) {
+      bilan.dataset.etat = 'ko';
+      bilan.textContent = 'Impossible de charger planificateur.js : ' + (erreur && erreur.message ? erreur.message : erreur);
+      throw erreur;
+    }
+    const {
+      ErreurPlanification, calculerProchaine, ajouterJours,
+      INTERVALLES_PAR_IMPORTANCE, BOITE_MIN, BOITE_MAX, RESULTATS
+    } = module;
+
+    // ---------- Petit outillage de test ----------
+    let reussis = 0;
+    let echoues = 0;
+
+    function groupe(titre) {
+      const li = document.createElement('li');
+      li.className = 'groupe';
+      li.textContent = titre;
+      liste.append(li);
+    }
+
+    function ajouterLigne(titre, ok, detail) {
+      const li = document.createElement('li');
+      li.className = 'test';
+      li.dataset.etat = ok ? 'ok' : 'ko';
+
+      const ligne = document.createElement('div');
+      ligne.className = 'ligne';
+      const nom = document.createElement('span');
+      nom.className = 'nom';
+      nom.textContent = titre;
+      const etat = document.createElement('span');
+      etat.className = 'etat';
+      etat.textContent = ok ? 'Réussi' : 'Échec';
+      ligne.append(nom, etat);
+      li.append(ligne);
+
+      if (detail) {
+        const p = document.createElement('p');
+        p.className = 'detail';
+        p.textContent = detail;
+        li.append(p);
+      }
+      liste.append(li);
+    }
+
+    async function tester(titre, corps) {
+      try {
+        const detail = await corps();
+        reussis += 1;
+        ajouterLigne(titre, true, typeof detail === 'string' ? detail : '');
+      } catch (erreur) {
+        echoues += 1;
+        ajouterLigne(titre, false, erreur && erreur.message ? erreur.message : String(erreur));
+      }
+    }
+
+    function vrai(condition, message) {
+      if (!condition) throw new Error(message);
+    }
+
+    function egal(reel, attendu, message) {
+      if (reel !== attendu) {
+        throw new Error(message + ' — attendu : ' + JSON.stringify(attendu) + ', obtenu : ' + JSON.stringify(reel));
+      }
+    }
+
+    function egalJson(reel, attendu, message) {
+      const a = JSON.stringify(reel);
+      const b = JSON.stringify(attendu);
+      if (a !== b) throw new Error(message + ' — attendu : ' + b + ', obtenu : ' + a);
+    }
+
+    // Vérifie qu'un appel est refusé par une ErreurPlanification de code VALIDATION ; renvoie le message pour l'afficher.
+    function refuse(appel, morceau) {
+      try {
+        appel();
+      } catch (erreur) {
+        if (!(erreur instanceof ErreurPlanification)) {
+          throw new Error('Erreur inattendue (' + (erreur && erreur.name) + ' : ' + (erreur && erreur.message) + ')');
+        }
+        if (erreur.code !== 'VALIDATION') {
+          throw new Error('Code attendu VALIDATION, obtenu ' + erreur.code);
+        }
+        if (morceau && !erreur.message.includes(morceau)) {
+          throw new Error('Le message devrait contenir « ' + morceau + ' », obtenu : « ' + erreur.message + ' »');
+        }
+        return erreur.message;
+      }
+      throw new Error('La valeur aurait dû être refusée, mais elle a été acceptée.');
+    }
+
+    function sans(objet, cle) {
+      const copie = { ...objet };
+      delete copie[cle];
+      return copie;
+    }
+
+    // ---------- Valeurs de référence, écrites à la main (calculées à part, avec un autre outil) ----------
+    const BASE = '2026-10-20';
+
+    // Intervalles demandés, pour contrôler le tableau exporté par planificateur.js.
+    const INTERVALLES_ATTENDUS = {
+      3: [1, 2, 4, 7, 14, 30, 60],
+      2: [1, 3, 7, 14, 30, 60, 120],
+      1: [1, 4, 10, 21, 45, 90, 180]
+    };
+
+    // Date de prochaine révision depuis BASE (2026-10-20), selon l'importance et la boîte OBTENUE (position 0 = boîte 1).
+    const DATES_DEPUIS_BASE = {
+      3: ['2026-10-21', '2026-10-22', '2026-10-24', '2026-10-27', '2026-11-03', '2026-11-19', '2026-12-19'],
+      2: ['2026-10-21', '2026-10-23', '2026-10-27', '2026-11-03', '2026-11-19', '2026-12-19', '2027-02-17'],
+      1: ['2026-10-21', '2026-10-24', '2026-10-30', '2026-11-10', '2026-12-04', '2027-01-18', '2027-04-18']
+    };
+
+    // Boîte obtenue selon le résultat (position 0 = départ en boîte 1, position 6 = départ en boîte 7).
+    const BOITE_APRES = {
+      reussi: [2, 3, 4, 5, 6, 7, 7],
+      hesite: [1, 2, 3, 4, 5, 6, 7],
+      rate: [1, 1, 1, 1, 1, 1, 1]
+    };
+
+    const ENTREE = { boite: 3, importance: 2, resultat: 'reussi', aujourdhui: BASE };
+
+    const IMPORTANCES = [3, 2, 1];
+    const NOMS_RESULTATS = ['reussi', 'hesite', 'rate'];
+
+    // ---------- Les tests ----------
+    groupe('Règles de boîte');
+
+    await tester('« reussi » : boîte + 1 (1→2, 2→3, 3→4, 4→5, 5→6, 6→7)', () => {
+      for (let boite = 1; boite <= 6; boite += 1) {
+        const resultat = calculerProchaine({ ...ENTREE, boite, resultat: 'reussi' });
+        egal(resultat.boite, boite + 1, 'Boîte obtenue en partant de la boîte ' + boite);
+      }
+    });
+
+    await tester('« hesite » : la boîte ne change pas (de 1 à 7)', () => {
+      for (let boite = 1; boite <= 7; boite += 1) {
+        const resultat = calculerProchaine({ ...ENTREE, boite, resultat: 'hesite' });
+        egal(resultat.boite, boite, 'Boîte obtenue en partant de la boîte ' + boite);
+      }
+    });
+
+    await tester('« rate » : retour en boîte 1, depuis chaque boîte de 1 à 7', () => {
+      for (let boite = 1; boite <= 7; boite += 1) {
+        const resultat = calculerProchaine({ ...ENTREE, boite, resultat: 'rate' });
+        egal(resultat.boite, 1, 'Boîte obtenue en partant de la boîte ' + boite);
+      }
+    });
+
+    await tester('Boîte 7 + « reussi » : la boîte reste à 7 (jamais de boîte 8), avec l’intervalle de la boîte 7', () => {
+      const details = [];
+      for (const importance of IMPORTANCES) {
+        const resultat = calculerProchaine({ boite: 7, importance, resultat: 'reussi', aujourdhui: BASE });
+        egal(resultat.boite, 7, 'Boîte obtenue, importance ' + importance);
+        egal(resultat.prochaineRevision, DATES_DEPUIS_BASE[importance][6], 'Date, importance ' + importance);
+        details.push('importance ' + importance + ' → ' + resultat.prochaineRevision);
+      }
+      return details.join(' ; ');
+    });
+
+    await tester('Boîte 7 + « hesite » : reste à 7 ; boîte 7 + « rate » : retombe en boîte 1', () => {
+      for (const importance of IMPORTANCES) {
+        egal(calculerProchaine({ boite: 7, importance, resultat: 'hesite', aujourdhui: BASE }).boite, 7, 'hesite, importance ' + importance);
+        egal(calculerProchaine({ boite: 7, importance, resultat: 'rate', aujourdhui: BASE }).boite, 1, 'rate, importance ' + importance);
+      }
+    });
+
+    await tester('Boîte 1 + « rate » : reste en boîte 1', () => {
+      for (const importance of IMPORTANCES) {
+        egal(calculerProchaine({ boite: 1, importance, resultat: 'rate', aujourdhui: BASE }).boite, 1, 'Importance ' + importance);
+      }
+    });
+
+    await tester('Après un échec : boîte 1 et révision le lendemain, quelle que soit la boîte de départ et l’importance', () => {
+      for (const importance of IMPORTANCES) {
+        for (let boite = 1; boite <= 7; boite += 1) {
+          const resultat = calculerProchaine({ boite, importance, resultat: 'rate', aujourdhui: BASE });
+          egalJson(resultat, { boite: 1, prochaineRevision: '2026-10-21' }, 'Importance ' + importance + ', départ boîte ' + boite);
+        }
+      }
+      return '21 combinaisons : toutes donnent la boîte 1 et le 2026-10-21.';
+    });
+
+    groupe('Intervalles selon l’importance (date de départ : ' + BASE + ')');
+
+    for (const importance of IMPORTANCES) {
+      await tester('Importance ' + importance + ' : intervalles ' + INTERVALLES_ATTENDUS[importance].join(', ') + ' jours (boîtes 1 à 7)', () => {
+        const details = [];
+        for (let boite = 1; boite <= 7; boite += 1) {
+          // « hesite » garde la boîte : la boîte obtenue est donc celle de départ.
+          const resultat = calculerProchaine({ boite, importance, resultat: 'hesite', aujourdhui: BASE });
+          egal(resultat.boite, boite, 'Boîte obtenue');
+          egal(resultat.prochaineRevision, DATES_DEPUIS_BASE[importance][boite - 1], 'Date en boîte ' + boite);
+          details.push('boîte ' + boite + ' → ' + resultat.prochaineRevision);
+        }
+        return details.join(' ; ');
+      });
+    }
+
+    await tester('Les intervalles exportés correspondent exactement au tableau demandé', () => {
+      egalJson(INTERVALLES_PAR_IMPORTANCE[3], INTERVALLES_ATTENDUS[3], 'Importance 3');
+      egalJson(INTERVALLES_PAR_IMPORTANCE[2], INTERVALLES_ATTENDUS[2], 'Importance 2');
+      egalJson(INTERVALLES_PAR_IMPORTANCE[1], INTERVALLES_ATTENDUS[1], 'Importance 1');
+      egalJson(Object.keys(INTERVALLES_PAR_IMPORTANCE).sort(), ['1', '2', '3'], 'Importances présentes');
+    });
+
+    await tester('Plus une leçon est importante, plus elle revient souvent (intervalles croissants et plus courts)', () => {
+      for (let i = 0; i < 7; i += 1) {
+        vrai(INTERVALLES_PAR_IMPORTANCE[3][i] <= INTERVALLES_PAR_IMPORTANCE[2][i], 'Boîte ' + (i + 1) + ' : importance 3 ≤ importance 2');
+        vrai(INTERVALLES_PAR_IMPORTANCE[2][i] <= INTERVALLES_PAR_IMPORTANCE[1][i], 'Boîte ' + (i + 1) + ' : importance 2 ≤ importance 1');
+        if (i > 0) {
+          for (const importance of IMPORTANCES) {
+            vrai(INTERVALLES_PAR_IMPORTANCE[importance][i] > INTERVALLES_PAR_IMPORTANCE[importance][i - 1], 'Importance ' + importance + ' : intervalle croissant à la boîte ' + (i + 1));
+          }
+        }
+      }
+    });
+
+    await tester('Les tableaux d’intervalles ne peuvent pas être modifiés par erreur', () => {
+      let leve = false;
+      try { INTERVALLES_PAR_IMPORTANCE[2][0] = 99; } catch (erreur) { leve = true; }
+      vrai(leve, 'Modifier un intervalle aurait dû être refusé');
+      egal(INTERVALLES_PAR_IMPORTANCE[2][0], 1, 'L’intervalle doit être resté à 1');
+      leve = false;
+      try { INTERVALLES_PAR_IMPORTANCE[4] = [1]; } catch (erreur) { leve = true; }
+      vrai(leve, 'Ajouter une importance aurait dû être refusé');
+    });
+
+    groupe('Les 3 résultats pour chaque importance (départ en boîte 3, le ' + BASE + ')');
+
+    for (const importance of IMPORTANCES) {
+      for (const nomResultat of NOMS_RESULTATS) {
+        await tester('Importance ' + importance + ' · « ' + nomResultat + ' »', () => {
+          const boiteAttendue = BOITE_APRES[nomResultat][2];
+          const dateAttendue = DATES_DEPUIS_BASE[importance][boiteAttendue - 1];
+          const resultat = calculerProchaine({ boite: 3, importance, resultat: nomResultat, aujourdhui: BASE });
+          egalJson(resultat, { boite: boiteAttendue, prochaineRevision: dateAttendue }, 'Résultat');
+          return 'Boîte 3 → boîte ' + resultat.boite + ', prochaine révision le ' + resultat.prochaineRevision;
+        });
+      }
+    }
+
+    for (const importance of IMPORTANCES) {
+      await tester('Importance ' + importance + ' : les 21 combinaisons (7 boîtes × 3 résultats)', () => {
+        for (const nomResultat of NOMS_RESULTATS) {
+          for (let boite = 1; boite <= 7; boite += 1) {
+            const boiteAttendue = BOITE_APRES[nomResultat][boite - 1];
+            const dateAttendue = DATES_DEPUIS_BASE[importance][boiteAttendue - 1];
+            egalJson(
+              calculerProchaine({ boite, importance, resultat: nomResultat, aujourdhui: BASE }),
+              { boite: boiteAttendue, prochaineRevision: dateAttendue },
+              '« ' + nomResultat + ' » depuis la boîte ' + boite
+            );
+          }
+        }
+      });
+    }
+
+    groupe('Calendrier : ajouterJours()');
+
+    await tester('Fins de mois', () => {
+      egal(ajouterJours('2026-01-31', 1), '2026-02-01', '31 janvier + 1');
+      egal(ajouterJours('2026-04-30', 1), '2026-05-01', '30 avril + 1');
+      egal(ajouterJours('2026-02-28', 1), '2026-03-01', '28 février 2026 + 1');
+      egal(ajouterJours('2026-01-31', 30), '2026-03-02', '31 janvier + 30');
+    });
+
+    await tester('Fin d’année : le 31 décembre', () => {
+      egal(ajouterJours('2026-12-31', 1), '2027-01-01', '31 décembre 2026 + 1');
+      egal(ajouterJours('2026-12-31', 2), '2027-01-02', '31 décembre 2026 + 2');
+      egal(ajouterJours('2026-12-31', 60), '2027-03-01', '31 décembre 2026 + 60');
+      egal(ajouterJours('2026-12-31', 180), '2027-06-29', '31 décembre 2026 + 180');
+      egal(ajouterJours('2027-01-01', -1), '2026-12-31', '1er janvier 2027 − 1');
+    });
+
+    await tester('29 février 2028 (année bissextile)', () => {
+      egal(ajouterJours('2028-02-28', 1), '2028-02-29', '28 février 2028 + 1');
+      egal(ajouterJours('2028-02-29', 1), '2028-03-01', '29 février 2028 + 1');
+      egal(ajouterJours('2028-01-31', 29), '2028-02-29', '31 janvier 2028 + 29');
+      egal(ajouterJours('2028-03-01', -1), '2028-02-29', '1er mars 2028 − 1');
+      egal(ajouterJours('2028-02-29', 365), '2029-02-28', '29 février 2028 + 365');
+      egal(ajouterJours('2028-02-29', 366), '2029-03-01', '29 février 2028 + 366');
+    });
+
+    await tester('Années non bissextiles (2027, 2100) et bissextile (2000)', () => {
+      egal(ajouterJours('2027-02-28', 1), '2027-03-01', '28 février 2027 + 1');
+      egal(ajouterJours('2100-02-28', 1), '2100-03-01', '28 février 2100 + 1 (2100 n’est pas bissextile)');
+      egal(ajouterJours('2000-02-28', 1), '2000-02-29', '28 février 2000 + 1 (2000 est bissextile)');
+    });
+
+    await tester('Changement d’heure du 25 octobre 2026 : 24 → 25 octobre, puis 25 → 26 octobre', () => {
+      egal(ajouterJours('2026-10-24', 1), '2026-10-25', '24 octobre + 1 jour');
+      egal(ajouterJours('2026-10-25', 1), '2026-10-26', '25 octobre + 1 jour');
+      egal(ajouterJours('2026-10-24', 2), '2026-10-26', '24 octobre + 2 jours');
+      egal(ajouterJours('2026-10-26', -1), '2026-10-25', '26 octobre − 1 jour');
+      egal(ajouterJours('2026-10-24', 7), '2026-10-31', '24 octobre + 7 jours');
+      egal(ajouterJours('2026-10-24', 8), '2026-11-01', '24 octobre + 8 jours');
+    });
+
+    await tester('Autres changements d’heure (29 mars 2026 en Europe, 8 mars et 1er novembre 2026 aux États-Unis)', () => {
+      egal(ajouterJours('2026-03-28', 1), '2026-03-29', '28 mars + 1');
+      egal(ajouterJours('2026-03-29', 1), '2026-03-30', '29 mars + 1');
+      egal(ajouterJours('2026-03-07', 1), '2026-03-08', '7 mars + 1');
+      egal(ajouterJours('2026-03-08', 1), '2026-03-09', '8 mars + 1');
+      egal(ajouterJours('2026-10-31', 1), '2026-11-01', '31 octobre + 1');
+      egal(ajouterJours('2026-11-01', 1), '2026-11-02', '1er novembre + 1');
+      egal(ajouterJours('2026-01-01', 365), '2027-01-01', 'Une année entière à travers les deux changements d’heure');
+    });
+
+    await tester('Zéro jour, jours négatifs et grands décalages', () => {
+      egal(ajouterJours(BASE, 0), BASE, '0 jour');
+      egal(ajouterJours(BASE, -20), '2026-09-30', '20 jours en arrière');
+      egal(ajouterJours(BASE, 1000), '2029-07-16', '1000 jours');
+      egal(ajouterJours(BASE, -1000), '2024-01-24', '−1000 jours');
+      egal(ajouterJours('9999-12-30', 1), '9999-12-31', 'Dernier jour accepté');
+      egal(ajouterJours('1000-01-01', 0), '1000-01-01', 'Premier jour accepté');
+    });
+
+    groupe('Calendrier : calculerProchaine()');
+
+    await tester('Fin d’année : aujourd’hui le 31 décembre 2026', () => {
+      const veille = '2026-12-31';
+      egalJson(calculerProchaine({ boite: 1, importance: 3, resultat: 'reussi', aujourdhui: veille }), { boite: 2, prochaineRevision: '2027-01-02' }, 'Importance 3, boîte 1, réussi (+2 jours)');
+      egalJson(calculerProchaine({ boite: 4, importance: 2, resultat: 'rate', aujourdhui: veille }), { boite: 1, prochaineRevision: '2027-01-01' }, 'Importance 2, boîte 4, raté (+1 jour)');
+      egalJson(calculerProchaine({ boite: 6, importance: 1, resultat: 'reussi', aujourdhui: veille }), { boite: 7, prochaineRevision: '2027-06-29' }, 'Importance 1, boîte 6, réussi (+180 jours)');
+    });
+
+    await tester('29 février 2028 : aujourd’hui le 28, puis le 29 février', () => {
+      egalJson(calculerProchaine({ boite: 1, importance: 3, resultat: 'rate', aujourdhui: '2028-02-28' }), { boite: 1, prochaineRevision: '2028-02-29' }, 'Le 28 février, raté (+1 jour)');
+      egalJson(calculerProchaine({ boite: 1, importance: 1, resultat: 'reussi', aujourdhui: '2028-02-29' }), { boite: 2, prochaineRevision: '2028-03-04' }, 'Le 29 février, importance 1, réussi (+4 jours)');
+      egalJson(calculerProchaine({ boite: 4, importance: 2, resultat: 'reussi', aujourdhui: '2028-02-29' }), { boite: 5, prochaineRevision: '2028-03-30' }, 'Le 29 février, importance 2, boîte 4, réussi (+30 jours)');
+    });
+
+    await tester('Changement d’heure du 25 octobre 2026 : aujourd’hui le 24, puis le 25 octobre', () => {
+      egalJson(calculerProchaine({ boite: 2, importance: 3, resultat: 'rate', aujourdhui: '2026-10-24' }), { boite: 1, prochaineRevision: '2026-10-25' }, 'Le 24 octobre, raté (+1 jour)');
+      egalJson(calculerProchaine({ boite: 2, importance: 3, resultat: 'rate', aujourdhui: '2026-10-25' }), { boite: 1, prochaineRevision: '2026-10-26' }, 'Le 25 octobre, raté (+1 jour)');
+      egalJson(calculerProchaine({ boite: 1, importance: 3, resultat: 'reussi', aujourdhui: '2026-10-24' }), { boite: 2, prochaineRevision: '2026-10-26' }, 'Le 24 octobre, réussi (+2 jours)');
+    });
+
+    await tester('La date d’aujourd’hui vient du paramètre, jamais de l’horloge de l’appareil', () => {
+      egalJson(calculerProchaine({ boite: 1, importance: 3, resultat: 'rate', aujourdhui: '2030-05-05' }), { boite: 1, prochaineRevision: '2030-05-06' }, 'En 2030');
+      egalJson(calculerProchaine({ boite: 1, importance: 3, resultat: 'rate', aujourdhui: '1999-12-31' }), { boite: 1, prochaineRevision: '2000-01-01' }, 'En 1999');
+    });
+
+    groupe('Contrat de la fonction');
+
+    await tester('Le résultat contient exactement { boite, prochaineRevision }, prêt pour enregistrerReponse()', () => {
+      const resultat = calculerProchaine(ENTREE);
+      egalJson(Object.keys(resultat), ['boite', 'prochaineRevision'], 'Champs du résultat');
+      vrai(Number.isInteger(resultat.boite) && resultat.boite >= 1 && resultat.boite <= 7, 'La boîte doit être un entier de 1 à 7');
+      vrai(/^\d{4}-\d{2}-\d{2}$/.test(resultat.prochaineRevision), 'La date doit être au format AAAA-MM-JJ');
+      return JSON.stringify(resultat);
+    });
+
+    await tester('La fonction ne modifie pas son entrée (un objet gelé est accepté) et renvoie toujours le même résultat', () => {
+      const entree = Object.freeze({ boite: 5, importance: 1, resultat: 'hesite', aujourdhui: '2026-12-31' });
+      const avant = JSON.stringify(entree);
+      const premier = calculerProchaine(entree);
+      const second = calculerProchaine(entree);
+      egalJson(premier, second, 'Deux appels identiques');
+      egal(JSON.stringify(entree), avant, 'L’entrée ne doit pas changer');
+      vrai(premier !== second, 'Chaque appel doit renvoyer un nouvel objet');
+    });
+
+    await tester('Les constantes correspondent à celles de db.js (boîtes 1 à 7, trois résultats)', async () => {
+      let base;
+      try {
+        base = await import('./db.js');
+      } catch (erreur) {
+        throw new Error('db.js n’a pas pu être chargé : ' + (erreur && erreur.message ? erreur.message : erreur));
+      }
+      vrai(base.BOITE_MAX !== undefined && base.RESULTATS_REPONSE !== undefined,
+        'db.js ne fournit pas BOITE_MAX ni RESULTATS_REPONSE : l’étape 2A n’est probablement pas encore en ligne.');
+      egal(BOITE_MIN, base.BOITE_MIN, 'Boîte minimale');
+      egal(BOITE_MAX, base.BOITE_MAX, 'Boîte maximale');
+      egalJson([...RESULTATS], [...base.RESULTATS_REPONSE], 'Résultats possibles');
+    });
+
+    groupe('Valeurs refusées : ajouterJours()');
+
+    const refusDates = [
+      ['aucune date (undefined)', undefined, 'AAAA-MM-JJ'],
+      ['date null', null, 'AAAA-MM-JJ'],
+      ['date vide', '', 'AAAA-MM-JJ'],
+      ['date en nombre (20261025)', 20261025, 'AAAA-MM-JJ'],
+      ['date en objet Date', new Date(), 'AAAA-MM-JJ'],
+      ['date 2026-1-5 (sans zéros)', '2026-1-5', 'AAAA-MM-JJ'],
+      ['date 25/10/2026', '25/10/2026', 'AAAA-MM-JJ'],
+      ['horodatage UTC complet', '2026-10-25T00:00:00.000Z', 'AAAA-MM-JJ'],
+      ['mois 13', '2026-13-01', 'n’est pas une date qui existe'],
+      ['mois 00', '2026-00-10', 'n’est pas une date qui existe'],
+      ['jour 32', '2026-10-32', 'n’est pas une date qui existe'],
+      ['jour 00', '2026-10-00', 'n’est pas une date qui existe'],
+      ['30 février', '2026-02-30', 'n’est pas une date qui existe'],
+      ['29 février 2027 (année non bissextile)', '2027-02-29', 'n’est pas une date qui existe'],
+      ['année 0999 (avant 1000)', '0999-12-31', 'comprise entre 1000 et 9999']
+    ];
+    for (const [libelle, valeur, morceau] of refusDates) {
+      await tester('Refusé : ' + libelle, () => refuse(() => ajouterJours(valeur, 1), morceau));
+    }
+
+    const refusJours = [
+      ['nombre de jours décimal (1.5)', 1.5, 'nombre entier'],
+      ['nombre de jours en texte (« 1 »)', '1', 'nombre entier'],
+      ['nombre de jours NaN', NaN, 'nombre entier'],
+      ['nombre de jours infini', Infinity, 'nombre entier'],
+      ['nombre de jours null', null, 'nombre entier'],
+      ['nombre de jours absent (undefined)', undefined, 'nombre entier'],
+      ['nombre de jours booléen (true)', true, 'nombre entier']
+    ];
+    for (const [libelle, valeur, morceau] of refusJours) {
+      await tester('Refusé : ' + libelle, () => refuse(() => ajouterJours(BASE, valeur), morceau));
+    }
+
+    await tester('Refusé : un résultat après le 31 décembre 9999', () => refuse(() => ajouterJours('9999-12-31', 1), 'sort des années 1000 à 9999'));
+    await tester('Refusé : un résultat avant l’an 1000', () => refuse(() => ajouterJours('1000-01-01', -1), 'sort des années 1000 à 9999'));
+    await tester('Refusé : un décalage démesuré (10^21 jours)', () => refuse(() => ajouterJours(BASE, 1e21), 'sort des années 1000 à 9999'));
+    await tester('Refusé : un décalage démesuré négatif (−10^21 jours)', () => refuse(() => ajouterJours(BASE, -1e21), 'sort des années 1000 à 9999'));
+
+    groupe('Valeurs refusées : calculerProchaine()');
+
+    const refusEntrees = [
+      ['aucun objet (undefined)', undefined, 'un objet'],
+      ['null', null, 'un objet'],
+      ['un tableau', [], 'un objet'],
+      ['un texte', 'reussi', 'un objet'],
+      ['champ « boite » manquant', sans(ENTREE, 'boite'), '« boite » est obligatoire'],
+      ['champ « importance » manquant', sans(ENTREE, 'importance'), '« importance » est obligatoire'],
+      ['champ « resultat » manquant', sans(ENTREE, 'resultat'), '« resultat » est obligatoire'],
+      ['champ « aujourdhui » manquant', sans(ENTREE, 'aujourdhui'), '« aujourdhui » est obligatoire'],
+      ['faute de casse (« aujourdHui »)', { ...sans(ENTREE, 'aujourdhui'), aujourdHui: BASE }, 'n’existe pas'],
+      ['champ en trop (« leconId »)', { ...ENTREE, leconId: 'x' }, 'n’existe pas'],
+      ['champ en trop (« historique »)', { ...ENTREE, historique: [] }, 'n’existe pas']
+    ];
+    for (const [libelle, valeur, morceau] of refusEntrees) {
+      await tester('Refusé : ' + libelle, () => refuse(() => calculerProchaine(valeur), morceau));
+    }
+
+    const refusBoites = [
+      ['boîte 0', 0], ['boîte 8', 8], ['boîte −1', -1], ['boîte 2.5', 2.5], ['boîte « 3 » en texte', '3'],
+      ['boîte NaN', NaN], ['boîte infinie', Infinity], ['boîte null', null], ['boîte absente (undefined)', undefined], ['boîte booléenne (true)', true]
+    ];
+    for (const [libelle, valeur] of refusBoites) {
+      await tester('Refusé : ' + libelle, () => refuse(() => calculerProchaine({ ...ENTREE, boite: valeur }), 'entier entre 1 et 7'));
+    }
+
+    const refusImportances = [
+      ['importance 0', 0], ['importance 4', 4], ['importance 1.5', 1.5], ['importance « 2 » en texte', '2'],
+      ['importance NaN', NaN], ['importance null', null], ['importance absente (undefined)', undefined]
+    ];
+    for (const [libelle, valeur] of refusImportances) {
+      await tester('Refusé : ' + libelle, () => refuse(() => calculerProchaine({ ...ENTREE, importance: valeur }), 'entier entre 1 et 3'));
+    }
+
+    const refusResultats = [
+      ['résultat « Reussi » (majuscule)', 'Reussi'], ['résultat « réussi » (avec accents)', 'réussi'], ['résultat « ok »', 'ok'],
+      ['résultat vide', ''], ['résultat « rate » suivi d’un espace', 'rate '], ['résultat null', null], ['résultat en nombre (1)', 1],
+      ['résultat absent (undefined)', undefined]
+    ];
+    for (const [libelle, valeur] of refusResultats) {
+      await tester('Refusé : ' + libelle, () => refuse(() => calculerProchaine({ ...ENTREE, resultat: valeur }), '« reussi », « hesite » ou « rate »'));
+    }
+
+    const refusAujourdhui = [
+      ['aujourdhui 2026-1-5 (sans zéros)', '2026-1-5', 'AAAA-MM-JJ'],
+      ['aujourdhui 05/10/2026', '05/10/2026', 'AAAA-MM-JJ'],
+      ['aujourdhui en horodatage UTC complet', '2026-10-05T10:00:00.000Z', 'AAAA-MM-JJ'],
+      ['aujourdhui en nombre (20261005)', 20261005, 'AAAA-MM-JJ'],
+      ['aujourdhui null', null, 'AAAA-MM-JJ'],
+      ['aujourdhui en objet Date', new Date(), 'AAAA-MM-JJ'],
+      ['aujourdhui vide', '', 'AAAA-MM-JJ'],
+      ['aujourdhui « demain »', 'demain', 'AAAA-MM-JJ'],
+      ['aujourdhui absent (undefined)', undefined, 'AAAA-MM-JJ'],
+      ['aujourdhui 2026-13-01 (mois 13)', '2026-13-01', 'n’est pas une date qui existe'],
+      ['aujourdhui 2026-02-30', '2026-02-30', 'n’est pas une date qui existe'],
+      ['aujourdhui 2027-02-29 (année non bissextile)', '2027-02-29', 'n’est pas une date qui existe'],
+      ['aujourdhui 0999-12-31 (avant l’an 1000)', '0999-12-31', 'comprise entre 1000 et 9999']
+    ];
+    for (const [libelle, valeur, morceau] of refusAujourdhui) {
+      await tester('Refusé : ' + libelle, () => refuse(() => calculerProchaine({ ...ENTREE, aujourdhui: valeur }), morceau));
+    }
+
+    await tester('Refusé : un résultat qui sortirait des années acceptées (9999-12-31 + 1 jour)', () =>
+      refuse(() => calculerProchaine({ boite: 1, importance: 3, resultat: 'rate', aujourdhui: '9999-12-31' }), 'sort des années 1000 à 9999'));
+
+    // ---------- Bilan ----------
+    const total = reussis + echoues;
+    if (echoues === 0) {
+      bilan.dataset.etat = 'ok';
+      bilan.textContent = total + ' tests réussis sur ' + total + '. Le planificateur est prêt.';
+    } else {
+      bilan.dataset.etat = 'ko';
+      bilan.textContent = echoues + ' échec(s) sur ' + total + ' tests. Voir les lignes rouges ci-dessous.';
+    }
+  </script>
+</body>
+</html>
