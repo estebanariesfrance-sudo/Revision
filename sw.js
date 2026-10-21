@@ -4,7 +4,7 @@
 // Pour publier une mise à jour : change simplement cette valeur
 // (v1 -> v2 -> v3...). L'ancien cache sera supprimé automatiquement.
 // ============================================================
-const VERSION = 'v4';
+const VERSION = 'v5';
 
 const PREFIXE = 'revision-';
 const CACHE_NAME = PREFIXE + VERSION;
@@ -17,6 +17,7 @@ const FICHIERS = [
   './style.css',
   './app.js',
   './db.js',
+  './planificateur.js',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png'
